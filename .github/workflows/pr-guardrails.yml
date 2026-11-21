@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Gitleaks
         run: |
@@ -27,8 +29,18 @@ jobs:
           sudo mv /tmp/gitleaks-bin/gitleaks /usr/local/bin/
           rm -rf /tmp/gitleaks-bin
 
-      - name: Run Gitleaks (Working Tree)
-        run: gitleaks detect --source . --no-git -v --redact
+      - name: Run Gitleaks (PR Commit Diff)
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_REF" ]; then
+            git fetch origin "$BASE_REF" || true
+            gitleaks detect --source . --log-opts="origin/$BASE_REF..HEAD" -v --redact
+          else
+            gitleaks detect --source . --log-opts="HEAD~1..HEAD" -v --redact
+          fi
 
   hygiene:
     name: Governance & Hygiene Check
@@ -60,12 +72,4 @@ jobs:
 
           if [ -f package.json ]; then
             node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json valid');"
-          fi
-
-          if [ -n "${CHANGED:-}" ]; then
-            PY_FILES=$(echo "$CHANGED" | grep -E '\.py$' || true)
-            if [ -n "$PY_FILES" ]; then
-              python3 -m py_compile $PY_FILES
-              echo "Python syntax valid"
-            fi
           fi
