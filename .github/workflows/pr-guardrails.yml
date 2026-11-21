@@ -1,0 +1,75 @@
+name: PR Guardrails
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pr-guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          mkdir -p /tmp/gitleaks-bin
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz -C /tmp/gitleaks-bin gitleaks
+          sudo mv /tmp/gitleaks-bin/gitleaks /usr/local/bin/
+          rm -rf /tmp/gitleaks-bin
+
+      - name: Run Gitleaks (PR Commit Diff)
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_REF" ]; then
+            git fetch origin "$BASE_REF" || true
+            gitleaks detect --source . --log-opts="origin/$BASE_REF..HEAD" -v --redact
+          else
+            gitleaks detect --source . --log-opts="HEAD~1..HEAD" -v --redact
+          fi
+
+  hygiene:
+    name: Governance & Hygiene Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Zero Microsoft Office Sprawl & Manifest Integrity
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_REF" ]; then
+            git fetch origin "$BASE_REF" --depth=1 || true
+            CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD" --diff-filter=ACMR || true)
+            if [ -n "$CHANGED" ]; then
+              BAD_OFFICE=$(echo "$CHANGED" | grep -iE '\.(docx|pptx|xlsx)$' | grep -viE '(^|/)(__tests__|tests?|fixtures?)(/|$)' || true)
+              if [ -n "$BAD_OFFICE" ]; then
+                echo "ERROR: Microsoft Office sprawl blocked by governance:"
+                echo "$BAD_OFFICE"
+                exit 1
+              fi
+            fi
+          fi
+
+          if [ -f package.json ]; then
+            node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json valid');"
+          fi
